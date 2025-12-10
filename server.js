@@ -4,17 +4,19 @@ const fs = require('fs');
 const path = require('path');
 const StellarSdk = require('@stellar/stellar-sdk');
 
-const app = express();
-app.use(cors());
-app.use(express.json());
-app.use(express.static('public'));
+// 🔑 Load environment variables from .env (for local dev)
+require('dotenv').config();
 
-// Stellar Config
-const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
-const server = new StellarSdk.Horizon.Server('https://horizon-testnet.stellar.org');
+// Stellar Config from environment
+const NETWORK_PASSPHRASE = process.env.NETWORK_PASSPHRASE || "Test SDF Network ; September 2015";
+const HORIZON_URL = process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org';
+const server = new StellarSdk.Horizon.Server(HORIZON_URL, {
+  allowHttp: true,
+  networkPassphrase: NETWORK_PASSPHRASE
+});
+
+// DB Setup
 const DB_FILE = path.join(__dirname, 'healthstash-db.json');
-
-// Initialize DB
 if (!fs.existsSync(DB_FILE)) {
   fs.writeFileSync(DB_FILE, JSON.stringify({ wallets: {} }, null, 2));
 }
@@ -22,13 +24,20 @@ if (!fs.existsSync(DB_FILE)) {
 function loadDB() { return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); }
 function saveDB(data) { fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2)); }
 
-// 🔑 HARD-CODED ISSUER (from your successful demo.js)
+// 🔑 Get issuer from environment variable (required for Render)
 function getOrCreateIssuer() {
-  const ISSUER_SECRET = "SCBJXSNGLJQXBT5R7TBCUW67JLC3F4E4KIYI7EUZHSG5P42TFU3VR2H5";
-  return StellarSdk.Keypair.fromSecret(ISSUER_SECRET);
+  const issuerSecret = process.env.ISSUER_SECRET;
+  if (!issuerSecret) {
+    throw new Error('ISSUER_SECRET environment variable is required');
+  }
+  try {
+    return StellarSdk.Keypair.fromSecret(issuerSecret);
+  } catch (e) {
+    throw new Error('Invalid ISSUER_SECRET: ' + e.message);
+  }
 }
 
-// 🏥 CREATE DEDICATED PHARMACY WALLET
+// 🏥 Create dedicated pharmacy wallet
 async function getOrCreatePharmacy() {
   const db = loadDB();
   
@@ -45,7 +54,7 @@ async function getOrCreatePharmacy() {
     await fetch(`https://friendbot.stellar.org?addr=${pharmacy.publicKey()}`).catch(() => {});
     await new Promise(r => setTimeout(r, 3000));
     
-    // Create trustline to HEALTH
+    // Create trustline to HEALTH asset
     const issuer = getOrCreateIssuer();
     const asset = new StellarSdk.Asset('HEALTH', issuer.publicKey());
     
@@ -76,7 +85,7 @@ async function getOrCreatePharmacy() {
   return StellarSdk.Keypair.fromSecret(db.wallets['pharmacy'].stellarSecret);
 }
 
-// 💰 HARD-CODED EMPLOYEE (from your successful demo.js)
+// 💰 Hardcoded employee from your successful transaction
 const EMPLOYEE_PUBLIC = "GB55CHFS6VY35HML3LRVZYUSMVCCKF2EZTFMCT4OEY7AQCYDMYBMNYGY";
 const EMPLOYEE_SECRET = "SDQT5G3RFIDCBEBZY44XABQ23B3FUAYQARAJ5F3DBKTTZ753TXFP445O";
 
@@ -93,10 +102,15 @@ async function getRealBalance(stellarPubKey, assetIssuer) {
   }
 }
 
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(express.static('public'));
+
 // MINT → Uses your exact employee key
 app.post('/api/mint', async (req, res) => {
   try {
-    const { amount } = req.body; // employeeId ignored — hardcoded
+    const { amount } = req.body;
     if (!amount) return res.status(400).json({ error: 'Amount required' });
 
     const issuer = getOrCreateIssuer();
@@ -110,7 +124,7 @@ app.post('/api/mint', async (req, res) => {
     };
     saveDB(db);
 
-    // Build tx
+    // Build transaction
     let issuerAcc = await server.loadAccount(issuer.publicKey());
     const tx = new StellarSdk.TransactionBuilder(issuerAcc, {
       fee: StellarSdk.BASE_FEE,
@@ -209,12 +223,17 @@ app.get('/api/provider', async (req, res) => {
   }
 });
 
-// HISTORY (optional)
+// HISTORY
 app.get('/api/history/:employeeId', (req, res) => {
   res.json([]);
 });
 
-const PORT = 3000;
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ status: '✅ HealthStash POC Running' });
+});
+
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 HealthStash POC running at http://localhost:${PORT}`);
 });
